@@ -3,274 +3,176 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timedelta
 import re
-import time
 
 
-BASE_URL = "https://thuvienphapluat.vn"
-
-# Thử phiên bản mobile trước vì GitHub Actions thường bị 403
-URLS = [
-    "https://m.thuvienphapluat.vn/van-ban-moi",
-    "https://thuvienphapluat.vn/van-ban-moi",
-]
+BASE_URL = "https://vanban.chinhphu.vn"
+LIST_URL = "https://vanban.chinhphu.vn/he-thong-van-ban?classid=1"
 
 HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Mobile Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
     ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;"
-        "q=0.9,image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.google.com/",
-    "Connection": "keep-alive",
+    "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
 }
 
 
-def get_page():
-    """
-    Thử lấy trang Văn bản mới.
-    Ưu tiên phiên bản mobile, nếu thất bại thì thử desktop.
-    """
+def get_new_documents(days=2, max_items=30):
+    print(f"Đang truy cập: {LIST_URL}")
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
-    last_error = None
-
-    for url in URLS:
-        try:
-            print(f"Đang truy cập: {url}")
-
-            response = session.get(
-                url,
-                timeout=30,
-                allow_redirects=True,
-            )
-
-            print(
-                f"HTTP {response.status_code}: "
-                f"{response.url}"
-            )
-
-            if response.status_code == 200:
-                return response.text
-
-            last_error = (
-                f"HTTP {response.status_code} "
-                f"tại {url}"
-            )
-
-        except requests.RequestException as exc:
-            last_error = str(exc)
-
-        time.sleep(2)
-
-    raise RuntimeError(
-        "Không thể truy cập Thư Viện Pháp Luật. "
-        f"Lỗi cuối cùng: {last_error}"
+    response = requests.get(
+        LIST_URL,
+        headers=HEADERS,
+        timeout=30,
     )
 
+    print(f"HTTP {response.status_code}")
 
-def get_new_documents(days=2, max_items=30):
-    """
-    Lấy các văn bản pháp luật mới trong khoảng days ngày gần nhất.
-    """
+    response.raise_for_status()
 
-    html = get_page()
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    documents = []
-    seen = set()
+    soup = BeautifulSoup(response.text, "html.parser")
 
     today = datetime.now().date()
     from_date = today - timedelta(days=days)
 
-    # Thử nhiều loại thẻ HTML vì giao diện mobile
-    # và desktop có thể khác nhau.
-    headings = soup.find_all(
-        ["h1", "h2", "h3", "h4"]
-    )
+    documents = []
+    seen = set()
 
-    for heading in headings:
+    # Tìm các liên kết có số hiệu văn bản và ngày ban hành
+    for link in soup.find_all("a", href=True):
+        text = link.get_text(" ", strip=True)
 
-        link = heading.find("a", href=True)
-
-        if not link:
-            continue
-
-        title = link.get_text(
-            " ",
-            strip=True
+        match = re.search(
+            r"(.+?)\s+(\d{2}/\d{2}/\d{4})$",
+            text
         )
 
-        if not title:
+        if not match:
             continue
 
-        href = link.get("href", "").strip()
+        so_hieu = match.group(1).strip()
+        ngay_ban_hanh = match.group(2)
 
-        if not href:
+        # Loại bỏ những link không giống số hiệu văn bản
+        if "/" not in so_hieu:
             continue
 
-        # Chỉ lấy liên kết văn bản pháp luật
-        if "/van-ban/" not in href:
+        try:
+            document_date = datetime.strptime(
+                ngay_ban_hanh,
+                "%d/%m/%Y"
+            ).date()
+        except ValueError:
             continue
 
-        url = urljoin(BASE_URL, href)
+        if document_date < from_date:
+            continue
+
+        url = urljoin(
+            BASE_URL,
+            link.get("href")
+        )
 
         if url in seen:
             continue
 
         seen.add(url)
 
-        # Lấy nội dung khu vực xung quanh tiêu đề
-        text = ""
-
-        container = heading.parent
+        # Tìm trích yếu gần liên kết hiện tại
+        container = link.parent
+        title = ""
 
         if container:
-            text = container.get_text(
+            container_text = container.get_text(
                 " ",
                 strip=True
             )
 
-        if len(text) < 50 and container:
-            if container.parent:
-                text = container.parent.get_text(
-                    " ",
-                    strip=True
-                )
+            # Bỏ số hiệu/ngày ở đầu để lấy phần trích yếu
+            title = container_text.replace(
+                text,
+                "",
+                1
+            ).strip()
 
-        # Tìm ngày ban hành
-        match = re.search(
-            r"Ban hành[:\s]*(\d{1,2}/\d{1,2}/\d{4})",
-            text,
-            re.IGNORECASE
+        if not title and container and container.parent:
+            parent_text = container.parent.get_text(
+                " ",
+                strip=True
+            )
+
+            title = parent_text.replace(
+                text,
+                "",
+                1
+            ).strip()
+
+        # Làm sạch ngày bị lặp
+        title = re.sub(
+            r"^\d{2}/\d{2}/\d{4}\s*",
+            "",
+            title
         )
 
-        ngay_ban_hanh = ""
+        title = re.sub(
+            r"\s*Tài liệu đính kèm.*$",
+            "",
+            title
+        ).strip()
 
-        if match:
-            ngay_ban_hanh = match.group(1)
+        loai = detect_document_type(so_hieu)
 
-        # Lọc theo ngày
-        if ngay_ban_hanh:
-            try:
-                document_date = datetime.strptime(
-                    ngay_ban_hanh,
-                    "%d/%m/%Y"
-                ).date()
-
-                if document_date < from_date:
-                    continue
-
-            except ValueError:
-                pass
-
-        # Xác định loại văn bản
-        loai = ""
-
-        document_types = [
-            "Luật",
-            "Nghị định",
-            "Nghị quyết",
-            "Quyết định",
-            "Thông tư",
-            "Thông báo",
-            "Công điện",
-            "Chỉ thị",
-            "Kế hoạch",
-            "Pháp lệnh",
-            "Công văn",
-            "Văn bản hợp nhất",
-            "Hướng dẫn",
-        ]
-
-        for document_type in document_types:
-            if title.startswith(document_type):
-                loai = document_type
-                break
-
-        documents.append(
-            {
-                "title": title,
-                "url": url,
-                "so_hieu": "",
-                "loai": loai,
-                "ngay_ban_hanh": ngay_ban_hanh,
-                "ngay_hieu_luc": "",
-                "co_quan": "",
-            }
-        )
+        documents.append({
+            "title": title or so_hieu,
+            "url": url,
+            "so_hieu": so_hieu,
+            "loai": loai,
+            "ngay_ban_hanh": ngay_ban_hanh,
+            "ngay_hieu_luc": "",
+            "co_quan": "",
+        })
 
         if len(documents) >= max_items:
             break
 
+    print(
+        f"Tìm thấy {len(documents)} văn bản "
+        f"trong {days} ngày gần nhất."
+    )
+
     return documents
 
 
+def detect_document_type(so_hieu):
+    value = so_hieu.upper()
+
+    types = {
+        "/NĐ-CP": "Nghị định",
+        "/NQ-CP": "Nghị quyết",
+        "/QĐ-TTG": "Quyết định",
+        "/TT-": "Thông tư",
+        "/QH": "Luật/Nghị quyết Quốc hội",
+        "VBHN": "Văn bản hợp nhất",
+        "/CT-": "Chỉ thị",
+        "/CĐ-": "Công điện",
+    }
+
+    for marker, name in types.items():
+        if marker in value:
+            return name
+
+    return "Văn bản pháp luật"
+
+
 if __name__ == "__main__":
-
-    print(
-        "=============================================="
+    docs = get_new_documents(
+        days=2,
+        max_items=30
     )
 
-    print(
-        "ĐANG LẤY VĂN BẢN MỚI TỪ "
-        "THƯ VIỆN PHÁP LUẬT"
-    )
-
-    print(
-        "=============================================="
-    )
-
-    try:
-
-        documents = get_new_documents(
-            days=2,
-            max_items=30,
-        )
-
-        print(
-            f"Tìm thấy {len(documents)} văn bản."
-        )
-
-        for i, doc in enumerate(documents, 1):
-
-            print(
-                "=" * 70
-            )
-
-            print(
-                f"{i}. {doc['title']}"
-            )
-
-            print(
-                f"Loại: "
-                f"{doc['loai'] or 'Chưa xác định'}"
-            )
-
-            print(
-                "Ngày ban hành: "
-                f"{doc['ngay_ban_hanh'] or 'Chưa xác định'}"
-            )
-
-            print(
-                f"Link: {doc['url']}"
-            )
-
-    except Exception as exc:
-
-        print(
-            "LỖI CRAWLER:"
-        )
-
-        print(
-            str(exc)
-        )
-
-        raise
+    for i, doc in enumerate(docs, 1):
+        print("=" * 70)
+        print(f"{i}. {doc['so_hieu']}")
+        print(doc["title"])
+        print(doc["ngay_ban_hanh"])
+        print(doc["url"])
