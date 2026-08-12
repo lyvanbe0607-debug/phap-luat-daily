@@ -1,14 +1,13 @@
 import os
 import json
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import requests
 from datetime import datetime
 
 from crawler import get_new_documents
 
 
 STATE_FILE = "state.json"
+TELEGRAM_API = "https://api.telegram.org"
 
 
 def load_state():
@@ -30,14 +29,8 @@ def save_state(state):
 def build_report(documents):
     today = datetime.now().strftime("%d/%m/%Y")
 
-    if not documents:
-        return (
-            f"BẢN TIN VĂN BẢN PHÁP LUẬT - {today}\n\n"
-            "Không phát hiện văn bản mới trong khoảng thời gian kiểm tra."
-        )
-
     lines = [
-        f"BẢN TIN VĂN BẢN PHÁP LUẬT - {today}",
+        f"📚 BẢN TIN VĂN BẢN PHÁP LUẬT - {today}",
         "",
         f"Phát hiện {len(documents)} văn bản mới trên Thư Viện Pháp Luật.",
         "",
@@ -46,50 +39,70 @@ def build_report(documents):
     for i, doc in enumerate(documents, 1):
         lines.extend([
             f"{i}. {doc.get('title', 'Không có tiêu đề')}",
-            f"   Số hiệu: {doc.get('so_hieu') or 'Chưa xác định'}",
-            f"   Loại văn bản: {doc.get('loai') or 'Chưa xác định'}",
-            f"   Cơ quan ban hành: {doc.get('co_quan') or 'Chưa xác định'}",
-            f"   Ngày ban hành: {doc.get('ngay_ban_hanh') or 'Chưa xác định'}",
-            f"   Ngày hiệu lực: {doc.get('ngay_hieu_luc') or 'Chưa xác định'}",
-            f"   Link: {doc.get('url', '')}",
+            f"Số hiệu: {doc.get('so_hieu') or 'Chưa xác định'}",
+            f"Loại văn bản: {doc.get('loai') or 'Chưa xác định'}",
+            f"Cơ quan ban hành: {doc.get('co_quan') or 'Chưa xác định'}",
+            f"Ngày ban hành: {doc.get('ngay_ban_hanh') or 'Chưa xác định'}",
+            f"Ngày hiệu lực: {doc.get('ngay_hieu_luc') or 'Chưa xác định'}",
+            f"🔗 {doc.get('url', '')}",
             "",
         ])
 
     lines.append(
-        "Lưu ý: Đây là bản tin tự động. "
-        "Cần mở văn bản gốc để kiểm tra nội dung và hiệu lực trước khi áp dụng."
+        "ℹ️ Bản tin được tạo tự động. Vui lòng mở văn bản gốc để kiểm tra "
+        "nội dung và hiệu lực trước khi áp dụng."
     )
 
     return "\n".join(lines)
 
 
-def send_email(subject, body):
-    host = os.environ.get("SMTP_HOST")
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    user = os.environ.get("SMTP_USER")
-    password = os.environ.get("SMTP_PASSWORD")
-    mail_to = os.environ.get("MAIL_TO")
+def send_telegram(text):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
 
-    if not all([host, user, password, mail_to]):
-        raise RuntimeError("Thiếu cấu hình email SMTP")
-
-    message = MIMEMultipart()
-    message["From"] = user
-    message["To"] = mail_to
-    message["Subject"] = subject
-
-    message.attach(
-        MIMEText(body, "plain", "utf-8")
-    )
-
-    with smtplib.SMTP(host, port, timeout=30) as server:
-        server.starttls()
-        server.login(user, password)
-        server.sendmail(
-            user,
-            mail_to,
-            message.as_string()
+    if not token or not chat_id:
+        raise RuntimeError(
+            "Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID"
         )
+
+    url = f"{TELEGRAM_API}/bot{token}/sendMessage"
+
+    # Telegram giới hạn mỗi tin nhắn khoảng 4096 ký tự.
+    chunks = []
+
+    while len(text) > 4000:
+        cut = text.rfind("\n\n", 0, 4000)
+
+        if cut < 1000:
+            cut = text.rfind("\n", 0, 4000)
+
+        if cut < 1000:
+            cut = 4000
+
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip()
+
+    chunks.append(text)
+
+    for chunk in chunks:
+        response = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data.get("ok"):
+            raise RuntimeError(
+                f"Telegram API lỗi: {data}"
+            )
 
 
 def main():
@@ -115,15 +128,14 @@ def main():
     print(f"Có {len(new_documents)} văn bản mới.")
 
     if not new_documents:
-        print("Không có văn bản mới, không gửi email.")
+        print(
+            "Không có văn bản mới, không gửi Telegram."
+        )
         return
 
     report = build_report(new_documents)
 
-    today = datetime.now().strftime("%d/%m/%Y")
-    subject = f"[Pháp luật Daily] Văn bản mới ngày {today}"
-
-    send_email(subject, report)
+    send_telegram(report)
 
     for document in new_documents:
         url = document.get("url")
@@ -133,7 +145,9 @@ def main():
 
     save_state(state)
 
-    print("Đã gửi bản tin thành công.")
+    print(
+        "Đã gửi bản tin Telegram thành công."
+    )
 
 
 if __name__ == "__main__":
