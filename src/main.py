@@ -16,8 +16,32 @@ def load_state():
 
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+            data = json.load(f)
+
+        # Định dạng mới: danh sách URL đã gửi
+        if isinstance(data, list):
+            return data
+
+        # Tương thích với state.json cũ
+        if isinstance(data, dict):
+            urls = []
+
+            for value in data.values():
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, str):
+                            urls.append(item)
+                        elif isinstance(item, dict):
+                            url = item.get("url")
+                            if url:
+                                urls.append(url)
+
+            return urls
+
+        return []
+
+    except Exception as exc:
+        print(f"Không đọc được state.json: {exc}")
         return []
 
 
