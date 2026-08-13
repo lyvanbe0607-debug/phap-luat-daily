@@ -1,13 +1,18 @@
 import os
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from crawler import get_new_documents
 
 
 STATE_FILE = "state.json"
 TELEGRAM_API = "https://api.telegram.org"
+VN_TIMEZONE = timezone(timedelta(hours=7))
+
+
+def vietnam_now():
+    return datetime.now(VN_TIMEZONE)
 
 
 def load_state():
@@ -18,11 +23,9 @@ def load_state():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # Định dạng mới: danh sách URL đã gửi
         if isinstance(data, list):
             return data
 
-        # Tương thích với state.json cũ
         if isinstance(data, dict):
             urls = []
 
@@ -31,6 +34,7 @@ def load_state():
                     for item in value:
                         if isinstance(item, str):
                             urls.append(item)
+
                         elif isinstance(item, dict):
                             url = item.get("url")
                             if url:
@@ -47,16 +51,26 @@ def load_state():
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(
+            state,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
 
 
 def build_report(documents):
-    today = datetime.now().strftime("%d/%m/%Y")
+    now = vietnam_now()
+
+    today = now.strftime("%d/%m/%Y")
+    current_time = now.strftime("%H:%M")
 
     lines = [
         f"📚 BẢN TIN VĂN BẢN PHÁP LUẬT - {today}",
         "",
-        f"Phát hiện {len(documents)} văn bản mới trên Thư Viện Pháp Luật.",
+        "✅ Hệ thống đã kiểm tra thành công.",
+        "",
+        f"🆕 Phát hiện {len(documents)} văn bản mới.",
         "",
     ]
 
@@ -72,12 +86,40 @@ def build_report(documents):
             "",
         ])
 
-    lines.append(
-        "ℹ️ Bản tin được tạo tự động. Vui lòng mở văn bản gốc để kiểm tra "
-        "nội dung và hiệu lực trước khi áp dụng."
-    )
+    lines.extend([
+        f"🕗 Thời điểm kiểm tra: {current_time}",
+        "",
+        "Nguồn: Cổng thông tin văn bản Chính phủ.",
+        "",
+        "ℹ️ Vui lòng kiểm tra văn bản gốc và hiệu lực "
+        "trước khi áp dụng."
+    ])
 
     return "\n".join(lines)
+
+
+def build_empty_report():
+    now = vietnam_now()
+
+    today = now.strftime("%d/%m/%Y")
+    current_time = now.strftime("%H:%M")
+
+    return "\n".join([
+        f"📚 BẢN TIN VĂN BẢN PHÁP LUẬT - {today}",
+        "",
+        "✅ Hệ thống đã kiểm tra thành công.",
+        "",
+        "🔎 Không phát hiện văn bản pháp luật mới "
+        "trong kỳ kiểm tra.",
+        "",
+        "📅 Phạm vi kiểm tra: 3 ngày gần nhất.",
+        f"🕗 Thời điểm kiểm tra: {current_time}",
+        "",
+        "Nguồn: Cổng thông tin văn bản Chính phủ.",
+        "",
+        "ℹ️ Hệ thống sẽ tiếp tục kiểm tra tự động "
+        "vào ngày tiếp theo."
+    ])
 
 
 def send_telegram(text):
@@ -91,7 +133,6 @@ def send_telegram(text):
 
     url = f"{TELEGRAM_API}/bot{token}/sendMessage"
 
-    # Telegram giới hạn mỗi tin nhắn khoảng 4096 ký tự.
     chunks = []
 
     while len(text) > 4000:
@@ -134,8 +175,10 @@ def main():
 
     state = load_state()
 
+    # Kiểm tra 3 ngày gần nhất để hạn chế bỏ sót
+    # trường hợp nguồn cập nhật chậm.
     documents = get_new_documents(
-        days=2,
+        days=3,
         max_items=30,
     )
 
@@ -151,9 +194,14 @@ def main():
 
     print(f"Có {len(new_documents)} văn bản mới.")
 
+    # Luôn gửi Telegram để xác nhận cron đã hoạt động.
     if not new_documents:
+        report = build_empty_report()
+        send_telegram(report)
+
         print(
-            "Không có văn bản mới, không gửi Telegram."
+            "Không có văn bản mới. "
+            "Đã gửi thông báo trạng thái qua Telegram."
         )
         return
 
