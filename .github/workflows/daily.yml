@@ -1,7 +1,7 @@
 name: Pháp luật Daily
 
 on:
-schedule:
+  schedule:
     - cron: "7 8 * * *"
       timezone: "Asia/Ho_Chi_Minh"
   workflow_dispatch:
